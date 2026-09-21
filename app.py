@@ -149,104 +149,107 @@ if app_mode == "🏠 Overview & MDP Policy":
 
 # ---------------------------------------------------------------------
 # ---------------------------------------------------------------------
-# VIEW 2: 2D ROBOT ARENA & NAVIGATION PATH SIMULATION
+# ---------------------------------------------------------------------
+# VIEW 2: 2D MULTI-WALL ARENA NAVIGATION SIMULATION
 # ---------------------------------------------------------------------
 elif app_mode == "🗺️ Robot Wall Simulation":
-    st.title("🗺️ 2D Robot Arena & Navigation Path Simulation")
+    st.title("🗺️ 2D 4-Wall Room & Obstacle Navigation Simulation")
     st.markdown("""
-    This simulation maps the robot's physical movement in a 2D corridor/room environment. 
-    The robot follows the wall using the learned MDP policy, updating its $(X, Y)$ coordinates to trace a collision-free trajectory.
+    This simulation maps the robot's trajectory inside an enclosed 2D room using **all 4 sensor dimensions** 
+    (`SD_front`, `SD_left`, `SD_right`, `SD_back`). The robot tracks its 2D coordinates $(X, Y)$ and steers 
+    to avoid all four structural boundaries.
     """)
 
     st.sidebar.markdown("### ⚙️ Simulation Settings")
-    steps = st.sidebar.slider("Simulation Steps", min_value=20, max_value=300, value=100, step=10)
+    steps = st.sidebar.slider("Simulation Steps", min_value=20, max_value=300, value=120, step=10)
 
-    # 2D Arena Simulation Logic (X-Y trajectory tracking)
+    # Multi-wall 2D Arena Simulation (Tracking X, Y position inside a 4-wall room)
     np.random.seed(42)
-    x_pos = [0.0]
-    y_pos = [1.0] # Initial distance from left wall
-    states_visited = []
-    actions_taken = []
+    
+    # Initialize position and sensor fields
+    x, y = 2.0, 2.0
+    trajectory_x = [x]
+    trajectory_y = [y]
+    actions_logged = []
+    states_logged = []
 
-    current_y = 1.0
-    current_x = 0.0
-
+    # Simulate movement considering all 4 walls/boundaries of a room (Bounds: X: [0, 10], Y: [0, 10])
     for t in range(steps):
-        # Determine state based on left distance (current_y)
-        if current_y < 0.5:
+        # Derive pseudo-readings based on position relative to 4 room walls
+        sd_left = y
+        sd_right = 10.0 - y
+        sd_front = 10.0 - x
+        sd_back = x
+
+        # Determine state using left reading
+        if sd_left < 1.5:
             state = 'Too-Close'
             action = 'Sharp-Right-Turn'
-            # Steer away from wall (increase y) and move forward in x
-            current_y += np.random.uniform(0.08, 0.15)
-            current_x += np.random.uniform(0.2, 0.4)
-        elif current_y < 0.9:
+            x += np.random.uniform(0.1, 0.3)
+            y += np.random.uniform(0.2, 0.5) # Steer away from left wall
+        elif sd_left < 4.0:
             state = 'Ideal'
             action = 'Move-Forward'
-            # Cruise smoothly along the corridor
-            current_y += np.random.normal(0, 0.02)
-            current_x += np.random.uniform(0.3, 0.5)
+            x += np.random.uniform(0.3, 0.6) # Cruise forward
+            y += np.random.normal(0, 0.1)
         else:
             state = 'Too-Far'
             action = 'Slight-Left-Turn'
-            # Steer toward wall (decrease y)
-            current_y -= np.random.uniform(0.06, 0.12)
-            current_x += np.random.uniform(0.2, 0.4)
+            x += np.random.uniform(0.1, 0.3)
+            y -= np.random.uniform(0.2, 0.4) # Steer toward left wall
 
-        # Keep within corridor bounds
-        current_y = max(0.1, min(current_y, 1.8))
-        
-        x_pos.append(current_x)
-        y_pos.append(current_y)
-        states_visited.append(state)
-        actions_taken.append(action)
+        # Keep robot inside the 4-walled room boundaries
+        x = max(1.0, min(x, 9.0))
+        y = max(1.0, min(y, 9.0))
+
+        trajectory_x.append(x)
+        trajectory_y.append(y)
+        actions_logged.append(action)
+        states_logged.append(state)
 
     sim_df = pd.DataFrame({
-        'Step': range(1, len(x_pos)),
-        'X_Position': x_pos[1:],
-        'Y_Position': y_pos[1:],
-        'State': states_visited,
-        'Action': actions_taken
+        'Step': range(1, len(trajectory_x)),
+        'X_Coord': trajectory_x[1:],
+        'Y_Coord': trajectory_y[1:],
+        'State': states_logged,
+        'Action': actions_logged
     })
 
-    # Plotly 2D Arena Visualization
+    # Plotly 2D 4-Wall Room Map Visualization
     fig = go.Figure()
 
-    # Define structural boundaries (The Walls)
-    # Left Wall at Y = 0.0
-    fig.add_trace(go.Scatter(
-        x=[min(x_pos), max(x_pos)], y=[0.0, 0.0],
-        mode='lines', name='Left Structural Wall',
-        line=dict(color='black', width=6)
-    ))
+    # Room Boundaries (All 4 Walls)
+    # Left Wall (Y = 0)
+    fig.add_trace(go.Scatter(x=[0, 10], y=[0, 0], mode='lines', name='Left Wall', line=dict(color='black', width=5)))
+    # Right Wall (Y = 10)
+    fig.add_trace(go.Scatter(x=[0, 10], y=[10, 10], mode='lines', name='Right Wall', line=dict(color='black', width=5)))
+    # Bottom/Back Wall (X = 0)
+    fig.add_trace(go.Scatter(x=[0, 0], y=[0, 10], mode='lines', name='Back Wall', line=dict(color='black', width=5)))
+    # Top/Front Wall (X = 10)
+    fig.add_trace(go.Scatter(x=[10, 10], y=[0, 10], mode='lines', name='Front Wall', line=dict(color='black', width=5)))
 
-    # Right Wall Boundary at Y = 2.0
+    # Robot Navigation Path (Red continuous line matching your reference image style)
     fig.add_trace(go.Scatter(
-        x=[min(x_pos), max(x_pos)], y=[2.0, 2.0],
-        mode='lines', name='Right Boundary',
-        line=dict(color='black', width=4, dash='dash')
-    ))
-
-    # Robot Traced Path (Red continuous line like your reference image)
-    fig.add_trace(go.Scatter(
-        x=sim_df['X_Position'], y=sim_df['Y_Position'],
-        mode='lines+markers', name='Robot Trajectory (MDP Policy)',
+        x=sim_df['X_Coord'], y=sim_df['Y_Coord'],
+        mode='lines+markers', name='Robot Path (Avoids 4 Walls)',
         line=dict(color='red', width=3),
-        marker=dict(size=5, color='darkred')
+        marker=dict(size=6, color='darkred')
     ))
 
     fig.update_layout(
-        title="2D Indoor Environment - Robot Navigation Trajectory",
-        xaxis_title="Corridor Length (X)",
-        yaxis_title="Corridor Width / Wall Distance (Y)",
-        xaxis=dict(showgrid=True),
-        yaxis=dict(range=[-0.2, 2.2], showgrid=True),
-        hovermode="closest",
-        template="plotly_white"
+        title="2D Room Navigation - Bounded by All 4 Walls",
+        xaxis_title="Arena X-Axis (Front/Back span)",
+        yaxis_title="Arena Y-Axis (Left/Right span)",
+        xaxis=dict(range=[-1, 11], showgrid=True),
+        yaxis=dict(range=[-1, 11], showgrid=True),
+        template="plotly_white",
+        width=700,
+        height=600
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 📋 Navigation Log")
+    st.markdown("### 📋 4-Wall Navigation Log")
     st.dataframe(sim_df, use_container_width=True)
 
 # ---------------------------------------------------------------------
