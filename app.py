@@ -148,80 +148,105 @@ if app_mode == "🏠 Overview & MDP Policy":
         st.info(f"**State: `{row['State']}`** ➔ **Recommended Action:** `{row['Optimal_Action']}` (Value: `{row['Optimal_Value']:.2f}`)")
 
 # ---------------------------------------------------------------------
-# VIEW 2: ROBOT WALL SIMULATION (Collision-Free Path)
+# ---------------------------------------------------------------------
+# VIEW 2: 2D ROBOT ARENA & NAVIGATION PATH SIMULATION
 # ---------------------------------------------------------------------
 elif app_mode == "🗺️ Robot Wall Simulation":
-    st.title("🗺️ Interactive Wall-Following Simulation")
+    st.title("🗺️ 2D Robot Arena & Navigation Path Simulation")
     st.markdown("""
-    This simulation tracks the robot's trajectory along a corridor. The **left wall** is at Y = 0.0. 
-    The robot dynamically adjusts its distance using the MDP policy learned from the dataset:
-    * **Too-Close (Y < 0.5):** Executes `Sharp-Right-Turn` to move away from the wall.
-    * **Ideal (0.5 <= Y < 0.9):** Executes `Move-Forward` to cruise safely.
-    * **Too-Far (Y >= 0.9):** Executes `Slight-Left-Turn` to edge closer to the wall.
+    This simulation maps the robot's physical movement in a 2D corridor/room environment. 
+    The robot follows the wall using the learned MDP policy, updating its $(X, Y)$ coordinates to trace a collision-free trajectory.
     """)
 
     st.sidebar.markdown("### ⚙️ Simulation Settings")
-    steps = st.sidebar.slider("Simulation Steps", min_value=10, max_value=200, value=50, step=10)
-    initial_dist = st.sidebar.slider("Initial Left Distance (SD_left)", min_value=0.1, max_value=1.5, value=1.2, step=0.1)
+    steps = st.sidebar.slider("Simulation Steps", min_value=20, max_value=300, value=100, step=10)
 
+    # 2D Arena Simulation Logic (X-Y trajectory tracking)
     np.random.seed(42)
-    trajectory = []
-    actions_taken = []
+    x_pos = [0.0]
+    y_pos = [1.0] # Initial distance from left wall
     states_visited = []
-    
-    current_dist = initial_dist
+    actions_taken = []
+
+    current_y = 1.0
+    current_x = 0.0
+
     for t in range(steps):
-        if current_dist < 0.5:
+        # Determine state based on left distance (current_y)
+        if current_y < 0.5:
             state = 'Too-Close'
             action = 'Sharp-Right-Turn'
-            current_dist += np.random.uniform(0.1, 0.25)
-        elif current_dist < 0.9:
+            # Steer away from wall (increase y) and move forward in x
+            current_y += np.random.uniform(0.08, 0.15)
+            current_x += np.random.uniform(0.2, 0.4)
+        elif current_y < 0.9:
             state = 'Ideal'
             action = 'Move-Forward'
-            current_dist += np.random.normal(0, 0.03)
+            # Cruise smoothly along the corridor
+            current_y += np.random.normal(0, 0.02)
+            current_x += np.random.uniform(0.3, 0.5)
         else:
             state = 'Too-Far'
             action = 'Slight-Left-Turn'
-            current_dist -= np.random.uniform(0.08, 0.2)
-            
-        current_dist = max(0.05, current_dist)
-        trajectory.append((t, current_dist))
-        actions_taken.append(action)
+            # Steer toward wall (decrease y)
+            current_y -= np.random.uniform(0.06, 0.12)
+            current_x += np.random.uniform(0.2, 0.4)
+
+        # Keep within corridor bounds
+        current_y = max(0.1, min(current_y, 1.8))
+        
+        x_pos.append(current_x)
+        y_pos.append(current_y)
         states_visited.append(state)
+        actions_taken.append(action)
 
-    sim_df = pd.DataFrame(trajectory, columns=['Step', 'SD_Left_Distance'])
-    sim_df['Action'] = actions_taken
-    sim_df['State'] = states_visited
+    sim_df = pd.DataFrame({
+        'Step': range(1, len(x_pos)),
+        'X_Position': x_pos[1:],
+        'Y_Position': y_pos[1:],
+        'State': states_visited,
+        'Action': actions_taken
+    })
 
+    # Plotly 2D Arena Visualization
     fig = go.Figure()
+
+    # Define structural boundaries (The Walls)
+    # Left Wall at Y = 0.0
     fig.add_trace(go.Scatter(
-        x=sim_df['Step'], y=[0.0]*len(sim_df),
-        mode='lines', name='Left Wall (Y=0.0)',
-        line=dict(color='red', width=4, dash='dash')
+        x=[min(x_pos), max(x_pos)], y=[0.0, 0.0],
+        mode='lines', name='Left Structural Wall',
+        line=dict(color='black', width=6)
     ))
 
-    fig.add_hrect(y0=0.0, y1=0.5, fillcolor="red", opacity=0.1, annotation_text="Too-Close Zone", annotation_position="top left")
-    fig.add_hrect(y0=0.5, y1=0.9, fillcolor="green", opacity=0.1, annotation_text="Ideal Zone", annotation_position="top left")
-    fig.add_hrect(y0=0.9, y1=1.6, fillcolor="orange", opacity=0.1, annotation_text="Too-Far Zone", annotation_position="top left")
-
+    # Right Wall Boundary at Y = 2.0
     fig.add_trace(go.Scatter(
-        x=sim_df['Step'], y=sim_df['SD_Left_Distance'],
-        mode='lines+markers', name='Robot Path',
-        line=dict(color='blue', width=3),
-        marker=dict(size=8)
+        x=[min(x_pos), max(x_pos)], y=[2.0, 2.0],
+        mode='lines', name='Right Boundary',
+        line=dict(color='black', width=4, dash='dash')
+    ))
+
+    # Robot Traced Path (Red continuous line like your reference image)
+    fig.add_trace(go.Scatter(
+        x=sim_df['X_Position'], y=sim_df['Y_Position'],
+        mode='lines+markers', name='Robot Trajectory (MDP Policy)',
+        line=dict(color='red', width=3),
+        marker=dict(size=5, color='darkred')
     ))
 
     fig.update_layout(
-        title="Robot Distance from Left Wall Over Time",
-        xaxis_title="Time Step",
-        yaxis_title="SD_left Sensor Reading (Distance)",
-        yaxis=dict(range=[0.0, 1.6]),
-        hovermode="x unified"
+        title="2D Indoor Environment - Robot Navigation Trajectory",
+        xaxis_title="Corridor Length (X)",
+        yaxis_title="Corridor Width / Wall Distance (Y)",
+        xaxis=dict(showgrid=True),
+        yaxis=dict(range=[-0.2, 2.2], showgrid=True),
+        hovermode="closest",
+        template="plotly_white"
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 📋 Step-by-Step Simulation Log")
+    st.markdown("### 📋 Navigation Log")
     st.dataframe(sim_df, use_container_width=True)
 
 # ---------------------------------------------------------------------
