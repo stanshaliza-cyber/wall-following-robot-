@@ -15,19 +15,96 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------
-# DATA LOADING & CACHING
+# DATA LOADING & MDP COMPUTATION (ROBUST FALLBACK)
 # ---------------------------------------------------------------------
 @st.cache_data
-def load_data():
+def load_data_and_compute_mdp():
+    # Load sensor dataset
     sensor_df = pd.read_csv(
         'sensor_readings_4.csv',
         header=None,
         names=['SD_front', 'SD_left', 'SD_right', 'SD_back', 'Class']
     )
-    optimal_df = pd.read_csv('optimal_value_function.csv')
-    return sensor_df, optimal_df
+    
+    # Discretize states
+    def discretize_state(sd_left):
+        if sd_left < 0.5:
+            return 'Too-Close'
+        elif sd_left < 0.9:
+            return 'Ideal'
+        else:
+            return 'Too-Far'
 
-sensor_data, optimal_df = load_data()
+    sensor_df['State'] = sensor_df['SD_left'].apply(discretize_state)
+    states = ['Too-Close', 'Ideal', 'Too-Far']
+    actions = ['Move-Forward', 'Slight-Right-Turn', 'Sharp-Right-Turn', 'Slight-Left-Turn']
+    n_states = len(states)
+    n_actions = len(actions)
+
+    state_idx = {s: i for i, s in enumerate(states)}
+    action_idx = {a: i for i, a in enumerate(actions)}
+
+    # Empirical Transitions
+    transition_counts = np.zeros((n_states, n_actions, n_states))
+    state_sequence = sensor_df['State'].values
+    action_sequence = sensor_df['Class'].values
+
+    for t in range(len(sensor_df) - 1):
+        s = state_idx[state_sequence[t]]
+        a = action_idx.get(action_sequence[t])
+        s_next = state_idx[state_sequence[t + 1]]
+        if a is not None:
+            transition_counts[s, a, s_next] += 1
+
+    T = np.zeros((n_states, n_actions, n_states))
+    for s in range(n_states):
+        for a in range(n_actions):
+            total = transition_counts[s, a].sum()
+            if total > 0:
+                T[s, a] = transition_counts[s, a] / total
+            else:
+                T[s, a] = np.ones(n_states) / n_states
+
+    # Rewards Matrix
+    reward_values = {
+        'Too-Close': {'Move-Forward': -10, 'Slight-Right-Turn': 5, 'Sharp-Right-Turn': 10, 'Slight-Left-Turn': -10},
+        'Ideal': {'Move-Forward': 10, 'Slight-Right-Turn': 2, 'Sharp-Right-Turn': -5, 'Slight-Left-Turn': 2},
+        'Too-Far': {'Move-Forward': -2, 'Slight-Right-Turn': -10, 'Sharp-Right-Turn': -10, 'Slight-Left-Turn': 10},
+    }
+    R = np.array([[reward_values[s][a] for a in actions] for s in states])
+
+    # Value Iteration
+    gamma = 0.9
+    tolerance = 1e-4
+    V = np.zeros(n_states)
+    for _ in range(1000):
+        V_new = np.zeros(n_states)
+        for s in range(n_states):
+            Q_sa = np.zeros(n_actions)
+            for a in range(n_actions):
+                Q_sa[a] = R[s][a] + gamma * np.dot(T[s][a], V)
+            V_new[s] = np.max(Q_sa)
+        if np.max(np.abs(V_new - V)) < tolerance:
+            V = V_new
+            break
+        V = V_new
+
+    policy = {}
+    for s in range(n_states):
+        Q_sa = np.zeros(n_actions)
+        for a in range(n_actions):
+            Q_sa[a] = R[s][a] + gamma * np.dot(T[s][a], V)
+        policy[states[s]] = actions[np.argmax(Q_sa)]
+
+    optimal_df = pd.DataFrame({
+        'State': states,
+        'Optimal_Value': V,
+        'Optimal_Action': [policy[s] for s in states]
+    })
+
+    return sensor_df, optimal_df, T, states, actions
+
+sensor_data, optimal_df, T, states, actions = load_data_and_compute_mdp()
 
 # ---------------------------------------------------------------------
 # SIDEBAR NAVIGATION & CONTROLS
@@ -54,7 +131,7 @@ st.sidebar.info(
 if app_mode == "🏠 Overview & MDP Policy":
     st.title("🤖 Wall-Following Robot MDP & Value Iteration")
     st.markdown("""
-    This dashboard models a robot navigating a corridor by following the wall on its left using sensor readings (**SD_left**). 
+    This dashboard models a robot navigating a corridor by following the wall on its left using sensor readings (`SD_left`). 
     Using **Value Iteration**, the optimal policy ensures the robot maintains an ideal distance without crashing into the walls.
     """)
 
@@ -66,7 +143,6 @@ if app_mode == "🏠 Overview & MDP Policy":
     st.markdown("### 🏆 Optimal Policy & Value Function")
     st.dataframe(optimal_df.style.highlight_max(subset=['Optimal_Value'], color='lightgreen'), use_container_width=True)
 
-    # Display policy summary visually
     st.markdown("### 🧭 Decision Mapping")
     for _, row in optimal_df.iterrows():
         st.info(f"**State: `{row['State']}`** ➔ **Recommended Action:** `{row['Optimal_Action']}` (Value: `{row['Optimal_Value']:.2f}`)")
@@ -77,19 +153,17 @@ if app_mode == "🏠 Overview & MDP Policy":
 elif app_mode == "🗺️ Robot Wall Simulation":
     st.title("🗺️ Interactive Wall-Following Simulation")
     st.markdown("""
-    This simulation tracks the robot's trajectory along a corridor. The **left wall** is at $Y = 0.0$. 
+    This simulation tracks the robot's trajectory along a corridor. The **left wall** is at Y = 0.0. 
     The robot dynamically adjusts its distance using the MDP policy learned from the dataset:
-    * **Too-Close ($Y < 0.5$):** Executes `Sharp-Right-Turn` to move away from the wall.
-    * **Ideal ($0.5 \le Y < 0.9$):** Executes `Move-Forward` to cruise safely.
-    * **Too-Far ($Y \ge 0.9$):** Executes `Slight-Left-Turn` to edge closer to the wall.
+    * **Too-Close (Y < 0.5):** Executes `Sharp-Right-Turn` to move away from the wall.
+    * **Ideal (0.5 <= Y < 0.9):** Executes `Move-Forward` to cruise safely.
+    * **Too-Far (Y >= 0.9):** Executes `Slight-Left-Turn` to edge closer to the wall.
     """)
 
-    # Simulation parameters in sidebar
     st.sidebar.markdown("### ⚙️ Simulation Settings")
-    steps = st.sidebar.slider("Simulation Steps", min_info=10, max_value=200, value=50, step=10)
+    steps = st.sidebar.slider("Simulation Steps", min_value=10, max_value=200, value=50, step=10)
     initial_dist = st.sidebar.slider("Initial Left Distance (SD_left)", min_value=0.1, max_value=1.5, value=1.2, step=0.1)
 
-    # Run simulation
     np.random.seed(42)
     trajectory = []
     actions_taken = []
@@ -97,24 +171,20 @@ elif app_mode == "🗺️ Robot Wall Simulation":
     
     current_dist = initial_dist
     for t in range(steps):
-        # Determine state
         if current_dist < 0.5:
             state = 'Too-Close'
             action = 'Sharp-Right-Turn'
-            # Move away from wall (increase y)
             current_dist += np.random.uniform(0.1, 0.25)
         elif current_dist < 0.9:
             state = 'Ideal'
             action = 'Move-Forward'
-            # Stable cruising with slight noise
             current_dist += np.random.normal(0, 0.03)
         else:
             state = 'Too-Far'
             action = 'Slight-Left-Turn'
-            # Move toward wall (decrease y)
             current_dist -= np.random.uniform(0.08, 0.2)
             
-        current_dist = max(0.05, current_dist) # Prevent negative values
+        current_dist = max(0.05, current_dist)
         trajectory.append((t, current_dist))
         actions_taken.append(action)
         states_visited.append(state)
@@ -123,22 +193,17 @@ elif app_mode == "🗺️ Robot Wall Simulation":
     sim_df['Action'] = actions_taken
     sim_df['State'] = states_visited
 
-    # Plotly visualization
     fig = go.Figure()
-
-    # Wall boundary
     fig.add_trace(go.Scatter(
         x=sim_df['Step'], y=[0.0]*len(sim_df),
-        mode='lines', name='Left Wall ($Y=0.0$)',
+        mode='lines', name='Left Wall (Y=0.0)',
         line=dict(color='red', width=4, dash='dash')
     ))
 
-    # Danger zone upper/lower bounds
     fig.add_hrect(y0=0.0, y1=0.5, fillcolor="red", opacity=0.1, annotation_text="Too-Close Zone", annotation_position="top left")
     fig.add_hrect(y0=0.5, y1=0.9, fillcolor="green", opacity=0.1, annotation_text="Ideal Zone", annotation_position="top left")
     fig.add_hrect(y0=0.9, y1=1.6, fillcolor="orange", opacity=0.1, annotation_text="Too-Far Zone", annotation_position="top left")
 
-    # Robot trajectory
     fig.add_trace(go.Scatter(
         x=sim_df['Step'], y=sim_df['SD_Left_Distance'],
         mode='lines+markers', name='Robot Path',
@@ -163,27 +228,19 @@ elif app_mode == "🗺️ Robot Wall Simulation":
 # VIEW 3: TRANSITION PROBABILITIES
 # ---------------------------------------------------------------------
 elif app_mode == "📊 Transition Probabilities":
-    st.title("📊 Empirical Transition Probabilities $P(s' \vert{} s, a)$")
+    st.title("📊 Empirical Transition Probabilities P(s' | s, a)")
     st.markdown("""
     Transition probabilities estimated directly from consecutive sensor readings in the Kaggle dataset. 
     Select an action below to inspect how likely the robot transitions between states.
     """)
 
-    states = ['Too-Close', 'Ideal', 'Too-Far']
-    actions = sensor_data['Class'].unique()
-
     selected_action = st.selectbox("Select Action", actions)
-
-    # Re-calculate transition matrix for display
-    state_idx = {s: i for i, s in enumerate(states)}
-    action_idx = {a: i for i, a in enumerate(actions)}
-    
-    # Simple mapping for demonstration heatmaps
-    trans_matrix = np.random.dirichlet(alpha=np.ones(3), size=3) # Replace with exact matrix if desired
+    action_idx = actions.index(selected_action)
+    trans_matrix = T[:, action_idx, :]
 
     fig, ax = plt.subplots(figsize=(8, 5))
     sns.heatmap(trans_matrix, annot=True, fmt=".2f", cmap="Blues", 
-                xticklabels=states, yticklabels=states, ax=ax)
+                xticklabels=states, yticklabels=states, ax=ax, vmin=0, vmax=1)
     ax.set_xlabel("Next State (s')")
     ax.set_ylabel("Current State (s)")
     ax.set_title(f"Transition Matrix Heatmap for Action: {selected_action}")
